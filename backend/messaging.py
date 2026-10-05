@@ -203,8 +203,15 @@ def _rate_ok(st: Sender) -> bool:
     return len(st.hits) <= RATE_PER_MIN
 
 
-async def handle(sender: str, body: str, channel: str | None = None, audio: bytes | None = None) -> list[str]:
-    """One incoming message -> the replies to send back (already split to fit the channel)."""
+async def handle(sender: str, body: str, channel: str | None = None, audio: bytes | None = None,
+                  defer: Callable[[list[str]], "asyncio.Future[Any] | Any"] | None = None) -> list[str]:
+    """One incoming message -> the replies to send back (already split to fit the channel).
+
+    `defer`, if given, is called with the real answer once it is ready whenever that answer
+    needed the local model: `handle()` then returns a short acknowledgement immediately instead
+    of making the caller wait on Ollama synchronously (a slow transport can time out a caller
+    that does not expect that). Transports that don't pass `defer` (Twilio today) are completely
+    unaffected -- same synchronous behaviour as always."""
     channel = channel or channel_of(sender)
     key = sender_key(sender)
     st = _state(key)
@@ -263,23 +270,47 @@ async def handle(sender: str, body: str, channel: str | None = None, audio: byte
         if DEV.search(text):
             conv, _how = await hindi_input.convert(text)
             english = conv or text
+
         from backend import assistant
-        answer = await assistant.aanswer(english, _ctx(lang))
-        intent = answer.data.get("intent", "")
-        kind = answer.kind
-        if kind in guide.KIND_TO_TOOL and intent in ALLOWED | {"fee_drag", "emergency", "goal"}:
-            g = guide.begin(guide.KIND_TO_TOOL[kind], english, lang, cid)
-            if not g["done"]:
-                return _pack([prefix + render_ask(g, st, channel, lang)], channel)
-            out = render_answer(answer, channel, lang)
-            link = _public_link(g)
-            return _pack([prefix + out + (("\n\n🔗 " + link) if link and channel == "whatsapp" else "")], channel)
-        if intent in ALLOWED or kind in ("scam_help", "scam_recovery", "tip_scan", "define", "help", "chitchat", "predict"):
-            return _pack([prefix + render_answer(answer, channel, lang)], channel)
-        note = ("यह सवाल मैं यहाँ नहीं सुलझा सकता। नीचे से चुनिए:" if lang == "hi" else "I can't help with that one here. Pick from the menu:")
-        return _pack([note + "\n\n" + menu_text(lang)], channel)
+        if defer is not None and assistant.will_need_model(english, _ctx(lang)):
+            ack = "एक मिनट, देख रहा हूँ…" if lang == "hi" else "Let me check that — one moment…"
+
+            async def _finish() -> None:
+                tok = guide.CTX.set(_ctx(lang))
+                try:
+                    replies = await _model_reply(english, cid, st, channel, lang, prefix)
+                finally:
+                    guide.CTX.reset(tok)
+                await defer(replies)
+
+            asyncio.create_task(_finish())
+            return _pack([prefix + ack], channel)
+
+        return await _model_reply(english, cid, st, channel, lang, prefix)
     finally:
         guide.CTX.reset(token)
+
+
+async def _model_reply(english: str, cid: str, st: Sender, channel: str, lang: str, prefix: str) -> list[str]:
+    """The part of handle() that needs assistant.aanswer() -- may call the local model. Factored
+    out so the deferred (async-ack) path in handle() and the synchronous path share one
+    implementation; nothing about the reply (formatting, guided follow-ups, the 'open this page'
+    link) differs based on which path got here."""
+    from backend import assistant
+    answer = await assistant.aanswer(english, _ctx(lang))
+    intent = answer.data.get("intent", "")
+    kind = answer.kind
+    if kind in guide.KIND_TO_TOOL and intent in ALLOWED | {"fee_drag", "emergency", "goal"}:
+        g = guide.begin(guide.KIND_TO_TOOL[kind], english, lang, cid)
+        if not g["done"]:
+            return _pack([prefix + render_ask(g, st, channel, lang)], channel)
+        out = render_answer(answer, channel, lang)
+        link = _public_link(g)
+        return _pack([prefix + out + (("\n\n🔗 " + link) if link and channel == "whatsapp" else "")], channel)
+    if intent in ALLOWED or kind in ("scam_help", "scam_recovery", "tip_scan", "define", "help", "chitchat", "predict"):
+        return _pack([prefix + render_answer(answer, channel, lang)], channel)
+    note = ("यह सवाल मैं यहाँ नहीं सुलझा सकता। नीचे से चुनिए:" if lang == "hi" else "I can't help with that one here. Pick from the menu:")
+    return _pack([note + "\n\n" + menu_text(lang)], channel)
 
 
 async def _reply_guide(g: dict[str, Any], st: Sender, channel: str, lang: str, answer: Any = None) -> str:

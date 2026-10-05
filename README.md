@@ -47,12 +47,124 @@ JARVIS makes each of those *visible and interactive*: you drag a slider, replay 
 | **Assistant** | Voice and text chat; structured answer cards; inline interactive visuals; saved funds; nine guided jobs | [ASSISTANT](docs/ASSISTANT.md) |
 | **Protect** | **Scam recovery coach**, stock-tip scanner, tax shield, panic-sell replay, standing "tell me if" rules | [FEATURES](docs/FEATURES.md#protect) |
 | **Rural** | Moneylender interest checker, "is this offer real?", government-scheme finder, document readiness, harvest/wage income planner | [RURAL](docs/RURAL.md) |
-| **WhatsApp / SMS** | The same tools by message (numbered menu, voice notes, Hindi), Twilio-ready webhook and a browser simulator | [MESSAGING](docs/MESSAGING.md) |
+| **WhatsApp / SMS** | The same tools by message (numbered menu, voice notes, Hindi) — a Twilio-ready webhook and browser simulator, **plus a live, no-cloud WhatsApp bridge and SMS gateway** (this fork) | [MESSAGING](docs/MESSAGING.md), [below](#live-messaging-whatsapp--sms-no-twilio-no-cloud) |
 | **Learn / Practice** | Goal chart, fund overlap, fee-drag slider, emergency-fund meter, weekly spoken digest, scam call rehearsal, glossary, drill-downs | [FEATURES](docs/FEATURES.md#learn-and-practice) |
 | **Govern** | Risk firewall, rebalance simulator, tamper-evident audit ledger and tamper test | [FEATURES](docs/FEATURES.md#govern) |
 | **Research** | **Search and analyse any listed stock**, four AI analysts and a forced dissenter, citation gate, time machine, calibration | [GOVERNANCE_ENGINE](docs/GOVERNANCE_ENGINE.md) |
 | **Voice** | Local neural voices (Kokoro, Piper), instant Stop, local Whisper speech-to-text | [VOICE](docs/VOICE.md) |
 | **Bilingual** | English and Hindi chosen per screen, including **speaking and typing Hindi**; hand-written Hindi with numbers placed by code | [LANGUAGE](docs/LANGUAGE.md) |
+
+## Live messaging: WhatsApp + SMS, no Twilio, no cloud
+
+The base project already ships a provider-independent message handler
+([backend/messaging.py](backend/messaging.py)) behind a Twilio-shaped webhook — menu, numbered
+choices, Hindi, voice notes, rate limiting, all channel-agnostic. This fork adds **two real,
+no-cloud transports** on top of it, built the same evening this section was written, so the
+status below is honest about what's proven versus what's built-but-unverified.
+
+### Why not just use Twilio?
+
+Twilio works, costs money past a trial tier, and for WhatsApp specifically requires a Meta
+Business verification process (display-name approval, a registered business, real lead time).
+The goal here was **free and immediate**: a real number a person can message today, with
+nothing leaving this machine except the message itself.
+
+### WhatsApp — live, two numbers paired, verified end-to-end
+
+**Architecture**: [`whatsapp-bridge/`](whatsapp-bridge/) is a small Node/TypeScript service using
+[`@whiskeysockets/baileys`](https://github.com/WhiskeySockets/Baileys) — a re-implementation of
+WhatsApp's real multi-device protocol over a raw WebSocket, no browser, no Puppeteer. It links to
+a WhatsApp account the same way WhatsApp Web does (pairing code, not QR — works headless), then
+forwards every inbound message to a new backend endpoint, `POST /bridge/whatsapp`
+([backend/app.py](backend/app.py)), which calls the existing `messaging.handle()` unchanged.
+
+```mermaid
+flowchart LR
+    WA["A real WhatsApp message"] --> BR["whatsapp-bridge (Baileys)"]
+    BR -- "POST /bridge/whatsapp" --> BE["FastAPI backend"]
+    BE -- "fast path: rules matched" --> BR
+    BE -. "slow path: needs the model" .-> ACK["immediate ack"]
+    ACK --> BR
+    BE -. "deferred, once ready" .-> SEND["POST bridge's own /send"]
+    SEND --> BR
+    BR -- "real reply" --> WA
+```
+
+**Why this is unofficial, and what that costs.** Baileys is not Meta's API — it's a reverse-
+engineered client, against WhatsApp's Terms of Service, and the account can be banned or logged
+out with no warning and no appeal. That's a real, accepted trade for zero cost and zero approval
+process, not an oversight. `whatsapp-bridge/auth*/` (the linked session's actual Signal Protocol
+keys — equivalent to a password) is gitignored and **never** committed.
+
+**What's actually been verified, live, not just in theory:**
+- Two real numbers paired and connected simultaneously against one backend.
+- A genuine message round-trip: real phone → real WhatsApp delivery → bridge → backend →
+  calculator → reply → back through WhatsApp to the real phone.
+- The **ack-then-async** pattern: `assistant.will_need_model()` (new, `backend/assistant.py`)
+  cheaply predicts — before ever touching Ollama — whether a question needs the local model. If
+  yes, the bridge gets an immediate "let me check…" instead of risking a timeout, and the real
+  answer follows once Ollama responds, delivered via a deferred callback. Verified the real
+  answer arrives in the right order, with the guided-flow logic fully intact (not a simplified
+  duplicate of the synchronous path).
+- **Multi-number correctness**: each bridge instance reports its own callback URL on every
+  request (`bridge_url` in the payload) rather than the backend assuming one fixed address — so
+  a deferred reply for number A can never be delivered through number B's connection.
+- **Resilience**: a reconnect attempt that itself throws no longer crashes the whole bridge
+  process (it used to — this was found live, from a real disconnect, not hypothesized); a
+  backend that's unreachable when a message arrives gets an apology sent back instead of silence.
+- A real crash was hit and diagnosed live during development (`stream error 515` → WhatsApp
+  logging the session out), recovered by clearing `auth/` and re-pairing — documented in
+  [DEPLOY.md](DEPLOY.md) as an expected, recoverable event, not a mystery.
+
+### SMS — backend complete and tested, hardware pairing in progress
+
+**Architecture is deliberately simpler than WhatsApp's**: no persistent socket, no Node process.
+[SMS Gateway for Android](https://github.com/capcom6/android-sms-gateway) (Apache 2.0, local/
+private mode) turns a spare Android phone into a stateless REST endpoint on the local network —
+the phone POSTs inbound texts to a webhook, and a reply is just one POST back to the phone's own
+`/message` endpoint. New: [`backend/sms_gateway.py`](backend/sms_gateway.py) (the outbound
+sender, mirroring the existing Twilio-REST helper's shape) and `POST /bridge/sms`
+([backend/app.py](backend/app.py)) — same `messaging.handle()`, same `will_need_model()`
+ack-then-async wiring, plus a `messageId` dedupe guard for webhook retries.
+
+**Status, stated honestly:**
+- ✅ `render_answer()`/`_pack()`'s existing SMS-length formatting (520/330 char cap, multi-segment
+  splitting) was already built and tested before this fork touched anything — confirmed still
+  correct against the new endpoint.
+- ✅ The endpoint itself: fast path, slow-path ack, and dedupe all verified live against the
+  running server with synthetic payloads shaped exactly like the gateway app's real webhook.
+- ✅ 3 new tests in `tests/test_messaging.py`, full suite green.
+- 🚧 **Real device pairing is not yet complete.** The gateway app's on-device registration flow
+  turned out to ask for an invite token from a "web dashboard" rather than exposing a pure
+  zero-account local mode as initially expected — still being worked through. The backend side
+  is finished and waiting; what's left is entirely on-device setup, documented step by step in
+  [DEPLOY.md §9](DEPLOY.md).
+- **Known trade-off**: unlike the WhatsApp bridge, there's no process independent of the backend
+  here — if the backend is down when a text arrives, nothing can apologize, because the thing
+  that would reply is the thing that's down. Stated plainly rather than hidden.
+
+### Also fixed along the way
+
+- **Speech-to-text was silently broken** on Python 3.13 (`faster-whisper` + `av` version
+  incompatibility — `TypeError: open() got an unexpected keyword argument 'metadata_errors'`,
+  every transcription failing with a misleading "I could not make that out, try again," which
+  actively told users to retry something that would never succeed). Fixed by moving the backend
+  to **Python 3.11** (`.venv311`), where pip resolves a compatible `av` automatically. Verified
+  with a real transcript, not just an import check.
+- `requirements.txt` pins corrected: `yfinance` (0.2.51 had stopped working against Yahoo's
+  current API entirely — portfolio prices were silently empty), `nsepython` (the pinned version
+  had been yanked from PyPI), `python-multipart` (missing — WhatsApp/Twilio form-body parsing
+  was crashing with a 500), `jugaad-data` removed (unused anywhere in the codebase, and its own
+  pin conflicted with `yfinance`'s).
+- Top nav bar fix: a silent horizontal-scroll overflow could hide the last page links with zero
+  visual cue — now wraps instead, so no page link can ever go invisible regardless of viewport
+  width or how long the portfolio-name button happens to be.
+
+### Full deployment runbook
+
+[DEPLOY.md](DEPLOY.md) — sizing a VPS, `docker-compose.yml` (backend + Ollama + the WhatsApp
+bridge + Caddy for automatic HTTPS), the one-time WhatsApp pairing steps, and the SMS gateway
+setup including the Android battery-optimization gotcha that nothing else documents.
 
 ## Architecture at a glance
 
@@ -139,10 +251,14 @@ risk/       policy, portfolio, the deterministic risk engine
 voice/      stt.py (faster-whisper)
 ingest/     data adapters with point-in-time safety tiers
 frontend/   React + Vite + Three.js (pages, components, stores)
+whatsapp-bridge/  Node/TypeScript Baileys bridge -- links a real WhatsApp number, forwards to
+            /bridge/whatsapp, sends deferred replies back via its own /send (this fork)
 config/     policy profiles, universe, demo script
 docs/       the documentation set (see below)
-tests/      385 tests incl. blind routing-evaluation sets
+tests/      385+ tests incl. blind routing-evaluation sets and the new SMS-bridge tests
 tools/      ingest, voice download, demos, dry run, calibration backfill
+
+Dockerfile, docker-compose.yml, Caddyfile, DEPLOY.md  -- production deployment (this fork)
 ```
 
 ## Documentation
@@ -163,6 +279,7 @@ tools/      ingest, voice download, demos, dry run, calibration backfill
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Known gaps and what to build next |
 | [docs/GOVERNANCE_ENGINE.md](docs/GOVERNANCE_ENGINE.md) | The original core: time machine, research desks, firewall, calibration |
 | [SPEC.md](SPEC.md) | The original build plan |
+| [DEPLOY.md](DEPLOY.md) | **This fork**: production deployment, the WhatsApp bridge pairing steps, the SMS gateway setup |
 
 ## Design rules
 
@@ -185,6 +302,7 @@ tools/      ingest, voice download, demos, dry run, calibration backfill
 ## Tech stack
 
 Python 3.11 · FastAPI · SQLite · faster-whisper · Kokoro / Piper TTS · Ollama (llama3.1:8b) · React 18 · Vite · Three.js / react-three-fiber · zustand · lightweight-charts · pytest
+Node 22 / TypeScript + Baileys (WhatsApp bridge) · Docker Compose + Caddy (deployment) — this fork
 
 Hotkeys (assistant): `SPACE` hold to speak · `/` focus the box · `Esc` stop speaking · `T` presenter mode · `Ctrl+K` search everything.
 

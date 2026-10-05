@@ -32,16 +32,22 @@ body::before { opacity: 0.45; }
 }
 .brand-mini b { font-weight: 700; color: var(--strong); }
 .brand-mini span { color: var(--cyan); margin: 0 6px; }
-.navlinks { display: flex; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
-.navlinks::-webkit-scrollbar { display: none; }
+/* The nav always wraps rather than scrolls: with nine pages plus controls, how much
+   room .navlinks gets depends on .nav-right's content (the portfolio name, the voice
+   label) as much as the viewport, so a width-only breakpoint can't reliably predict
+   whether everything fits. Scrolling with a hidden scrollbar also has no visual cue
+   that there is more and no mouse-wheel affordance -- items past the edge were simply
+   unreachable. Wrapping has neither failure mode. */
+.topnav { flex-wrap: wrap; height: auto; min-height: 56px; row-gap: 0; padding-top: 6px; }
+.nav-right { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+.nav-right .force-stop { margin-left: 0; }
+.navlinks { display: flex; gap: 2px; flex: 1 1 100%; min-width: 0; order: 3; margin: 0 -6px; }
 .navlinks a {
-  padding: 8px 13px; font-size: 14px; font-weight: 500; color: var(--text-dim);
+  padding: 9px 14px; font-size: 15px; font-weight: 500; color: var(--text-dim);
   text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap;
 }
 .navlinks a:hover { color: var(--text); }
 .navlinks a.on { color: var(--cyan); border-bottom-color: var(--cyan); }
-.nav-right { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
-.nav-right .force-stop { margin-left: 0; }
 
 .app-body { min-height: calc(100% - var(--nav-h, 56px)); }
 
@@ -270,16 +276,6 @@ body::before { opacity: 0.45; }
 .dock-chips button { padding: 8px 14px; border-radius: 999px; font-size: 14px; cursor: pointer; color: inherit; background: rgb(var(--wash) / .07); border: 1px solid rgb(var(--wash) / .25); }
 .dock-chips button:hover { border-color: var(--green); background: rgba(98, 210, 162,.12); }
 .dock-input { width: 100%; margin-top: 6px; padding: 7px 10px; font-size: 14px; border-radius: 8px; background: rgb(var(--wash) / .06); border: 1px solid rgb(var(--wash) / .18); color: inherit; font-family: inherit; }
-
-/* ----------------------------------------------------------------- nav that never hides a page */
-/* With nine pages plus controls the links no longer fit one row on most screens; the ones past the edge
-   were simply unreachable. Below 1500px the links get their own full-width row. */
-@media (max-width: 1500px) {
-  .topnav { flex-wrap: wrap; height: auto; min-height: 56px; row-gap: 0; padding-top: 6px; }
-  .nav-right { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
-  .navlinks { order: 3; flex: 1 1 100%; overflow-x: auto; margin: 0 -6px; }
-  .navlinks a { padding: 9px 14px; font-size: 15px; }
-}
 
 /* ----------------------------------------------------------------- home: one screen of doors */
 .tiles { display: grid; gap: 16px; grid-template-columns: 1fr; }

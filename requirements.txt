@@ -5,16 +5,20 @@ pydantic==2.10.4
 pyyaml==6.0.2
 httpx==0.28.1
 numpy==2.2.1
+python-multipart==0.0.32  # form-encoded bodies (Twilio/WhatsApp webhooks, request.form())
 
 # --- data sources (all free, no paid tier) ---
-yfinance==0.2.51          # NSE .NS + US OHLC, fundamentals, options
-nsepython==2.96           # NSE announcements, delivery %, bulk deals
-jugaad-data==0.26         # NSE/RBI historical + macro
+yfinance==1.7.0            # 0.2.51 broke against Yahoo's current API (JSONDecodeError on every ticker)
+nsepython==2.97            # 2.96 was yanked from PyPI
 feedparser==6.0.11        # Google News RSS
 requests==2.32.3          # EDGAR companyfacts, GDELT, FRED
+# jugaad-data was removed: unused anywhere in this codebase, and its pinned beautifulsoup4==4.9.3
+# conflicts with yfinance's >=4.11.1 (and has no wheel for recent Pythons regardless).
 
-# --- voice (H12.5+, additive only) ---
+# --- voice (H12.5+, additive only; Python 3.11 -- av has no 3.13 wheel compatible with this
+# faster-whisper, which crashes on import on 3.13 with no older av wheel available either) ---
 faster-whisper==1.1.1
+av==18.1.0
 
 # --- dev ---
 pytest==8.3.4

@@ -1,0 +1,23 @@
+{
+  "name": "jarvis-whatsapp-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Links a real WhatsApp number via Baileys and forwards messages to the JARVIS backend's /bridge/whatsapp.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "pair": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "express": "^4.21.2",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

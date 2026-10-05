@@ -1,0 +1,70 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    # No ports published -- only `app` on the compose network talks to it.
+
+  # One-shot: pulls the two models this project uses, then exits. Run once after first boot:
+  #   docker compose run --rm ollama-pull
+  # (re-running later is harmless -- `ollama pull` no-ops if the model is already present.)
+  ollama-pull:
+    image: ollama/ollama:latest
+    entrypoint: ["sh", "-c", "ollama pull llama3.1:8b && ollama pull phi3:mini"]
+    environment:
+      OLLAMA_HOST: "ollama:11434"
+    depends_on:
+      - ollama
+    profiles: ["init"]
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      WHATSAPP_BRIDGE_URL: "http://whatsapp-bridge:3000"
+    volumes:
+      - app-data:/app/data
+      - app-models:/app/models
+    depends_on:
+      - ollama
+
+  whatsapp-bridge:
+    build: ./whatsapp-bridge
+    restart: unless-stopped
+    environment:
+      JARVIS_BACKEND_URL: "http://app:8000"
+      BRIDGE_PORT: "3000"
+      WHATSAPP_AUTH_DIR: "/app/auth"
+      WHATSAPP_PAIR_NUMBER: "${WHATSAPP_PAIR_NUMBER:-}"
+    volumes:
+      - bridge-auth:/app/auth
+    depends_on:
+      - app
+    # Pairing needs a terminal attached the first time:
+    #   docker compose run --rm --service-ports whatsapp-bridge
+    # Afterward `docker compose up -d` is enough -- the linked session persists on the volume.
+    stdin_open: true
+    tty: true
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  ollama-models:
+  app-data:
+  app-models:
+  bridge-auth:
+  caddy-data:
+  caddy-config:

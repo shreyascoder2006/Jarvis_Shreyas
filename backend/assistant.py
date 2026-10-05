@@ -1721,6 +1721,21 @@ def answer(text: str, ctx: Ctx) -> Answer:
     return _run(intent, how, resolved, ctx)
 
 
+def will_need_model(text: str, ctx: Ctx) -> bool:
+    """True if aanswer() is about to call the local model for this text -- cheap and synchronous
+    (the same detect()/override() calls aanswer() makes first, before anything that touches
+    Ollama). Lets a slow transport (WhatsApp/SMS) send an immediate acknowledgement instead of
+    risking a timeout, without duplicating aanswer()'s own routing logic."""
+    resolved = ctx.convo.resolve(text) if ctx.convo is not None and hasattr(ctx.convo, "resolve") else text
+    intent, how = detect(resolved)
+    if understand.override(resolved, intent, how, ctx) is not None:
+        return False                               # understand.py already has a fast, local answer
+    if intent == "tip_scan" and len(_tip_body(resolved).split()) >= 6:
+        return True                                # tipminds.analyse also reads the wording via the model
+    fast = intent != "clarify" and not (how == "legacy" and len(resolved.split()) >= 8)
+    return not fast
+
+
 async def aanswer(text: str, ctx: Ctx) -> Answer:
     """Like answer(), but when the rules do not recognise the question a local model may pick
     the intent. Anything it is not confident about is asked about, never guessed."""

@@ -1,0 +1,9 @@
+# Replace with your real domain, then Caddy handles Let's Encrypt + renewal automatically.
+# your-domain.example {
+#     reverse_proxy app:8000
+# }
+
+# Placeholder for local/dev testing without a domain or TLS -- remove once you have a real one.
+:80 {
+    reverse_proxy app:8000
+}

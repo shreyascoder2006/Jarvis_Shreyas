@@ -1340,6 +1340,92 @@ async def twilio_status() -> dict:
     return {"ok": True}                        # delivery receipts: nothing is stored
 
 
+class BridgeIn(BaseModel):
+    jid: str                   # the Baileys JID, e.g. "919876543210@s.whatsapp.net"
+    body: str = ""
+    audio_b64: str | None = None
+    bridge_url: str | None = None   # this bridge instance's own base URL -- see bridge_whatsapp()
+
+
+@app.post("/bridge/whatsapp")
+async def bridge_whatsapp(payload: BridgeIn) -> dict:
+    """Inbound from a local WhatsApp bridge (whatsapp-bridge/, Baileys) -- unlike /twilio/webhook
+    this is never reachable from the public internet, only from bridge containers on the
+    compose-internal network, so there is no signature check to do here. JSON in, JSON out.
+
+    One backend can serve several linked numbers at once, each its own bridge instance/process.
+    A message that needs the local model gets an immediate acknowledgement in the response; the
+    real answer is posted back once it is ready to the bridge's own /send -- specifically the
+    bridge named in `payload.bridge_url`, which each bridge sends on every request, not a single
+    fixed address. Get this wrong and a deferred reply for number A gets delivered through
+    number B's connection instead -- wrong sender, wrong contact list, silently broken."""
+    import base64
+    import httpx
+
+    sender = "whatsapp:+" + payload.jid.split("@", 1)[0].lstrip("+")
+    audio = base64.b64decode(payload.audio_b64) if payload.audio_b64 else None
+    bridge_url = (payload.bridge_url or os.environ.get("WHATSAPP_BRIDGE_URL", "http://whatsapp-bridge:3000")).rstrip("/")
+
+    async def _defer(replies: list[str]) -> None:
+        try:
+            async with httpx.AsyncClient(timeout=20) as c:
+                for text in replies:
+                    await c.post(f"{bridge_url}/send", json={"jid": payload.jid, "text": text})
+        except Exception as exc:  # noqa: BLE001
+            bus.emit(EventType.ERROR, where="bridge_whatsapp", message=f"{type(exc).__name__}: {exc}"[:160])
+
+    replies = await messaging_mod.handle(sender, payload.body, "whatsapp", audio, defer=_defer)
+    return {"messages": replies}
+
+
+_SMS_SEEN: dict[str, float] = {}       # messageId -> first-seen time, for webhook-retry dedupe
+_SMS_SEEN_TTL = 300.0
+
+
+@app.post("/bridge/sms")
+async def bridge_sms(payload: dict) -> dict:
+    """Inbound from a gateway phone running SMS Gateway for Android in local/private mode --
+    same trust boundary as /bridge/whatsapp (LAN-only, no public exposure, no signature check).
+
+    No Node process here, unlike the WhatsApp bridge: the gateway app's own webhook/REST API is
+    already stateless, so this lives entirely in the backend. One real trade-off from that -- see
+    the implementation plan -- is that if THIS process is down, nothing can send an apology the
+    way the WhatsApp bridge's independent process can; the webhook POST just fails outright."""
+    import time
+
+    from backend import sms_gateway
+
+    body = payload.get("payload", payload)            # tolerate the raw event or its payload directly
+    message_id = body.get("messageId")
+    sender = body.get("phoneNumber", "")
+    text = body.get("message", "")
+    if not sender:
+        return {"ok": False, "reason": "missing phoneNumber"}
+
+    now = time.time()
+    for k in [k for k, t in _SMS_SEEN.items() if now - t > _SMS_SEEN_TTL]:
+        _SMS_SEEN.pop(k, None)
+    if message_id:
+        if message_id in _SMS_SEEN:
+            return {"ok": True, "deduped": True}       # a webhook retry of one we already answered
+        _SMS_SEEN[message_id] = now
+
+    async def _defer(replies: list[str]) -> None:
+        try:
+            for reply in replies:
+                result = await sms_gateway.send(sender, reply)
+                if not result.get("ok"):
+                    # send() reports failure (unconfigured, unreachable, bad creds) by returning
+                    # {"ok": False, ...} rather than raising -- catching only exceptions here
+                    # would miss exactly the failure modes most likely in practice.
+                    bus.emit(EventType.ERROR, where="bridge_sms", message=f"send failed: {result}"[:160])
+        except Exception as exc:  # noqa: BLE001
+            bus.emit(EventType.ERROR, where="bridge_sms", message=f"{type(exc).__name__}: {exc}"[:160])
+
+    replies = await messaging_mod.handle(sender, text, "sms", defer=_defer)
+    return {"ok": True, "messages": replies}
+
+
 @app.get("/messaging/status")
 async def messaging_status() -> dict:
     return messaging_mod.status()

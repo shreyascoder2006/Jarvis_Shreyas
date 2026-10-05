@@ -125,3 +125,49 @@ def test_in_app_chat_gets_a_link_back_to_the_page_with_the_result():
     finally:
         M.BASE.reset(tok)
     assert "🔗 http://localhost:8000/#/rural?tool=loan" in r
+
+
+def test_outbound_sms_send_needs_config_and_uses_the_gateways_rest_api(monkeypatch):
+    from backend import sms_gateway
+
+    assert asyncio.run(sms_gateway.send("+1", "hi"))["ok"] is False
+    monkeypatch.setenv("SMS_GATEWAY_URL", "http://192.168.1.50:8080")
+    monkeypatch.setenv("SMS_GATEWAY_USER", "u")
+    monkeypatch.setenv("SMS_GATEWAY_PASS", "p")
+    seen = {}
+
+    class Fake:
+        async def post(self, url, auth, json):
+            seen.update(url=url, auth=auth, json=json)
+            return type("R", (), {"status_code": 200})()
+    r = asyncio.run(sms_gateway.send("+919800000000", "hello", client=Fake()))
+    assert r["ok"] and seen["url"] == "http://192.168.1.50:8080/message" and seen["auth"] == ("u", "p")
+    assert seen["json"]["phoneNumbers"] == ["+919800000000"]
+
+
+def test_bridge_sms_endpoint_routes_fast_messages_synchronously_and_dedupes_retries():
+    from fastapi.testclient import TestClient
+    from backend.app import app
+
+    with TestClient(app) as c:
+        r1 = c.post("/bridge/sms", json={"payload": {
+            "messageId": "m1", "message": "hi", "phoneNumber": "+919800000099"}})
+        assert r1.json()["ok"] and "JARVIS" in r1.json()["messages"][0]
+
+        r2 = c.post("/bridge/sms", json={"payload": {
+            "messageId": "m1", "message": "hi", "phoneNumber": "+919800000099"}})
+        assert r2.json() == {"ok": True, "deduped": True}
+
+
+def test_bridge_sms_endpoint_acknowledges_immediately_when_the_model_is_needed():
+    from fastapi.testclient import TestClient
+    from backend.app import app
+
+    with TestClient(app) as c:
+        r = c.post("/bridge/sms", json={"payload": {
+            "messageId": "m2",
+            "message": "honestly not sure if im overpaying on fees across my stuff, can you have a look",
+            "phoneNumber": "+919800000099",
+        }})
+    body = r.json()
+    assert body["ok"] and len(body["messages"]) == 1 and "moment" in body["messages"][0].lower()

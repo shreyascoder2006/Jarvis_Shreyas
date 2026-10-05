@@ -1,8 +1,15 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv311/
 venv/
 .env
+
+# WhatsApp bridge: auth*/ holds a linked session's real Signal Protocol keys -- equivalent to
+# a password for that WhatsApp account. One per linked number (auth/, auth-<number>/, ...).
+# Never commit any of them.
+whatsapp-bridge/auth*/
+whatsapp-bridge/dist/
 data/*.db
 data/*.db-shm
 data/*.db-wal
