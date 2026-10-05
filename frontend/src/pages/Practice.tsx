@@ -8,6 +8,7 @@ import { MicIcon } from "../components/VoiceInput";
 import { useLang } from "../lib/lang";
 import { hashParams } from "../lib/router";
 import { EmergencyMeter, FeeDrag, WeeklyDigest } from "./PracticeMore";
+import { OverlapMatrixPanel } from "../components/OverlapMatrixPanel";
 
 const post = (url: string, body: unknown) =>
   fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
@@ -51,18 +52,21 @@ function Ring({ pct, tone }: { pct: number; tone: string }) {
   );
 }
 
-function OverlapChecker() {
+function OverlapChecker({ pick, setPick, onFunds }: {
+  pick: string[];
+  setPick: React.Dispatch<React.SetStateAction<string[]>>;
+  onFunds?: (f: any[]) => void;
+}) {
   const hi = useLang((s) => s.lang) === "hi";
   const [funds, setFunds] = useState<any[]>([]);
-  const [pick, setPick] = useState<string[]>(() => {
-    const q = hashParams(); const a = q.get("a"), b = q.get("b");
-    return a && b ? [a, b] : ["largecap_a", "bluechip_b"];
-  });
   const [mine, setMine] = useState<string[]>([]);
   const [d, setD] = useState<any>(null);
   const [hot, setHot] = useState<string | null>(null);
 
-  useEffect(() => { fetch("/funds").then((r) => r.json()).then((x) => setFunds(x.funds)).catch(() => {}); }, []);
+  useEffect(() => {
+    fetch("/funds").then((r) => r.json()).then((x) => { setFunds(x.funds); onFunds?.(x.funds); }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => { fetch("/myfunds").then((r) => r.json()).then((x) => setMine(x.funds)).catch(() => {}); }, []);
   const own = async (id: string) => {
     const on = !mine.includes(id);
@@ -379,9 +383,31 @@ export function ScamCall({ init, compact = false }: { init?: Record<string, stri
 
 export default function Practice() {
   const hi = useLang((s) => s.lang) === "hi";
+  // Lifted so the all-pairs matrix can drive the pair-by-pair checker below it.
+  const [pick, setPick] = useState<string[]>(() => {
+    const q = hashParams(); const a = q.get("a"), b = q.get("b");
+    return a && b ? [a, b] : ["largecap_a", "bluechip_b"];
+  });
+  const [funds, setFunds] = useState<any[]>([]);
+  const checkerRef = useRef<HTMLDivElement>(null);
+
+  const pickPair = (a: string, b: string) => {
+    setPick([a, b]);
+    checkerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return (
     <Page title="Practice" lead={hi ? "करके सीखिए: एक जैसे दो फ़ंड ख़रीदने से पहले तुलना कीजिए, और असली ठग कॉल आने से पहले अभ्यास कीजिए।" : "Learn by doing: compare funds before you buy two of the same, and rehearse a scam call before a real one arrives."}>
-      <div className="grid"><OverlapChecker /></div>
+      <div className="grid">
+        <OverlapMatrixPanel
+          funds={funds}
+          onPick={pickPair}
+          selected={pick.length === 2 ? [pick[0], pick[1]] : null}
+        />
+      </div>
+      <div className="grid" ref={checkerRef}>
+        <OverlapChecker pick={pick} setPick={setPick} onFunds={setFunds} />
+      </div>
       <div className="grid"><FeeDrag /></div>
       <div className="grid"><EmergencyMeter /></div>
       <div className="grid"><WeeklyDigest /></div>
